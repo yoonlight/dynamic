@@ -45,6 +45,8 @@ def main():
     dataset = echonet.datasets.Echo(split="all")
     systole_r = [dataset.frames[b][0] for b in basename]
     diastole_r = [dataset.frames[b][-1] for b in basename]
+    systole_lookup = {b: dataset.frames[b][0] for b in basename}
+    diastole_lookup = {b: dataset.frames[b][-1] for b in basename}
     with open(os.path.join(echonet.config.DATA_DIR, "FileList.csv")) as f:
         data = pandas.read_csv(f)
     data["FileName"] = data["FileName"].map(lambda x: os.path.splitext(x)[0])
@@ -69,14 +71,30 @@ def main():
     p = 1 / 50
     model = Sequence()
     model.linear.bias.data[:] = math.log(p)
+    class LSTM(torch.nn.Module):
+        def __init__(self):
+            super(LSTM, self).__init__()
+            self.lstm = torch.nn.LSTM(input_size=1, hidden_size=64, num_layers=3, bidirectional=True)
+            self.linear = torch.nn.Linear(64 * 2, 2)
+        def forward(self, x):
+            x = x.reshape(*x.shape, 1).transpose(0, 1)
+            x = self.lstm(x)[0]
+            x = self.linear(x)
+            x = x.transpose(0, 1).transpose(1, 2)
+            return x
+    model = LSTM()
+    model.linear.bias.data[:] = math.log(p)
+    # breakpoint()
     model.to(device)
     try:
-        raise ValueError()
+        # raise ValueError()
         model.load_state_dict(torch.load(os.path.join(output, "model.pt")))
     except:
         optim = torch.optim.SGD(model.parameters(), lr=1e-4, momentum=0.9, weight_decay=0)
+        scheduler = torch.optim.lr_scheduler.StepLR(optim, 50)
         for epoch in range(100):
             for s in ["TRAIN", "VAL"]:
+                model.train(s == "TRAIN")
                 print("Epoch #{} {}".format(epoch, s))
                 dataloader = torch.utils.data.DataLoader(dataset[s], batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"), drop_last=True)
                 total = 0.
@@ -98,8 +116,9 @@ def main():
                         total += loss.item()
                         n += mask.sum().item()
 
-                        pbar.set_description("Loss: {:.3f}".format(total / n))
+                        pbar.set_description("Loss: {:.4f}".format(total / n))
                         pbar.update()
+            scheduler.step()
         torch.save(model.state_dict(), os.path.join(output, "model.pt"))
 
     model.eval()
@@ -113,28 +132,70 @@ def main():
             for (filename, x, y) in dataloader:
                 x = x.to(device)
                 y = y.to(device)
-                yhat = model(x)
+                valid = ~torch.isnan(x)
                 mask = ~torch.logical_or(torch.isnan(torch.stack((x, x), dim=1)), torch.isnan(y))
+                x[torch.isnan(x)] = -10
                 yhat = model(x)
                 loss = torch.nn.functional.binary_cross_entropy_with_logits(yhat[mask], y[mask], reduction="sum")
                 prob = torch.sigmoid(yhat)
 
-                for (f, size, p) in zip(filename, x.cpu(), prob.cpu()):
-                    systole_p.append(list(scipy.signal.find_peaks(p[0, :], height=0.1, distance=5)[0]))
-                    diastole_p.append(list(scipy.signal.find_peaks(p[1, :], height=0.1, distance=5)[0]))
-                    if f == "0X1002E8FBACD08477":
-                        asd
+                for (f, s, p, v) in zip(filename, x.cpu(), prob.cpu(), valid):
+                    systole_p.append(scipy.signal.find_peaks([-math.inf] + list(p[0, v]) + [-math.inf], height=0.05, distance=5)[0] - 1)
+                    diastole_p.append(scipy.signal.find_peaks([-math.inf] + list(p[1, v]) + [-math.inf], height=0.05, distance=5)[0] - 1)
+
+                    if f in [
+                        "0X17828CD670289D36",
+                        "0X179B579A585FF160",
+                        "0X18BA5512BE5D6FFA",
+                        "0X19E42A10F0077B9F",
+                        "0X1A3D565B371DC573",
+                        "0X1B2BCDAE290F6015",
+                        "0X1CDE7FECA3A1754B",
+                        "0X1CF4B07994B62DBB",
+                        "0X1D865EBAD1A947E4",
+                        "0X1E50146E7EAFF53E",
+                        "0X1EB9E86F4FA26B5B",
+                        "0X2012F90A3894AE6C",
+                        "0X20F3D05837705ED2",
+                        "0X211D307253ACBEE7",
+                        "0X233DCAFBF90253C7",
+                        # ]:
+                        "0X18BA5512BE5D6FFA",
+                        "0X19359F9246BB8A33",
+                        "0X19E42A10F0077B9F",
+                        "0X1A3D565B371DC573",
+                        "0X1B2BCDAE290F6015",
+                        "0X1C8C0CE25970C40",
+                        "0X1D181F5019010E4B",
+                        "0X1E50146E7EAFF53E",
+                        "0X211D307253ACBEE7",
+                        "0X233DCAFBF90253C7",
+                        "0X26444E1ACD4FE90F",
+                        "0X272A1770B9F8E6A0",
+                        "0X28712788DD9BC1B6",
+                        "0X287AFCC7F6DEED83",
+                        "0X2B9185D91BBE0E97",
+                        "0X2BF66637343A27ED",
+                        "0X2D3E3C182D1459C8",
+                        "0X30DF42C999969D67",
+                        "0X6D1D29802905D6E0",
+                        ]:
+
                         fig, ax = plt.subplots(3, figsize=(8, 6))
 
-                        ax[0].plot(std * size + mean)
+                        ax[0].plot(std * s[v] + mean)
+                        ylim = ax[0].get_ylim()
+                        ax[0].plot([systole_lookup[f]] * 2, ylim, linewidth=1, color="k")
+                        ax[0].plot([diastole_lookup[f]] * 2, ylim, linewidth=1, color="k")
+                        ax[0].set_ylim(ylim)
 
-                        ax[1].plot(p[0, :])
+                        ax[1].plot(p[0, v])
                         ylim = ax[1].get_ylim()
                         for x in systole_p[-1]:
                             ax[1].plot([x, x], ylim, linewidth=1, color="k")
                         ax[1].set_ylim(ylim)
 
-                        ax[2].plot(p[1, :])
+                        ax[2].plot(p[1, v])
                         ylim = ax[1].get_ylim()
                         for x in diastole_p[-1]:
                             ax[2].plot([x, x], ylim, linewidth=1, color="k")
@@ -171,11 +232,10 @@ def main():
         if len(close) == 1:
             ans.append(abs(close[0]))
         else:
-            print(filename, len(close))
+            # print(filename, len(close))
             ans.append(25)
     print("Diastole:", sum(ans) / len(ans))
 
-    return
 
     # src_des = [(os.path.join(output, "trace", filename), os.path.join(output, "size", os.path.splitext(filename)[0] + ".pdf")) for filename in os.listdir(os.path.join(output, "trace"))]
     systole_p = []
@@ -215,6 +275,7 @@ def main():
             ans_offset.append(abs(close[0] - offset))
         else:
             ans.append(25)
+            ans_offset.append(25)
     print("Heuristic:", sum(ans) / len(ans))
     print("Heuristic (offset):", sum(ans_offset) / len(ans_offset))
 
