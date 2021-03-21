@@ -38,7 +38,7 @@ def main():
     # import collections
     # print(collections.Counter([s.shape[0] for s in size]))
     max_length = max([s.shape[0] for s in size])
-    batch_size = 256
+    batch_size = 512
     num_workers = 0
     device = torch.device("cuda")
 
@@ -152,7 +152,6 @@ def main():
                 pbar.set_description("Loss: {:.3f}".format(total / n))
                 pbar.update()
 
-    breakpoint()
     ans = []
     mask = [b in split["TEST"] for b in basename]
     for (filename, pred, real) in zip([x for (x, m) in zip(basename, mask) if m], systole_p, [x for (x, m) in zip(systole_r, mask) if m]):
@@ -250,19 +249,23 @@ class Dataset(torch.utils.data.Dataset):
 
 class Sequence(torch.nn.Module):
     # Based on https://github.com/pytorch/examples/blob/master/time_sequence_prediction/train.py
-    def __init__(self, dim=128):
+    def __init__(self, dim=64):
         super(Sequence, self).__init__()
         self.dim = dim
         self.lstm1 = torch.nn.LSTMCell(1, dim)
         self.lstm2 = torch.nn.LSTMCell(dim, dim)
         self.linear = torch.nn.Linear(dim, 2)
+        self.h_t = torch.nn.Parameter(torch.zeros(1, self.dim))
+        self.c_t = torch.nn.Parameter(torch.zeros(1, self.dim))
+        self.h_t2 = torch.nn.Parameter(torch.zeros(1, self.dim))
+        self.c_t2 = torch.nn.Parameter(torch.zeros(1, self.dim))
 
     def forward(self, input):
         outputs = []
-        h_t = torch.zeros(input.size(0), self.dim, dtype=input.dtype, device=input.device)
-        c_t = torch.zeros(input.size(0), self.dim, dtype=input.dtype, device=input.device)
-        h_t2 = torch.zeros(input.size(0), self.dim, dtype=input.dtype, device=input.device)
-        c_t2 = torch.zeros(input.size(0), self.dim, dtype=input.dtype, device=input.device)
+        h_t = self.h_t.repeat(input.size(0), 1)
+        c_t = self.c_t.repeat(input.size(0), 1)
+        h_t2 = self.h_t2.repeat(input.size(0), 1)
+        c_t2 = self.c_t2.repeat(input.size(0), 1)
 
         for (i, input_t) in enumerate(input.split(1, dim=1)):
             h_t, c_t = self.lstm1(input_t, (h_t, c_t))
