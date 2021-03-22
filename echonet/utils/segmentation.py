@@ -1,6 +1,7 @@
 """Functions for training and running segmentation."""
 
 import math
+import sklearn
 import os
 import time
 
@@ -86,24 +87,64 @@ def run(num_epochs=50,
     # Set up model
     model = torchvision.models.segmentation.__dict__[modelname](pretrained=pretrained, aux_loss=False)
 
-    model.classifier[-1] = torch.nn.Conv2d(model.classifier[-1].in_channels, 1, kernel_size=model.classifier[-1].kernel_size)  # change number of outputs to 1
+    p1 = 0.09
+    p2 = 1 / 112 / 112
+    model.classifier[-1] = torch.nn.Conv2d(model.classifier[-1].in_channels, 3, kernel_size=model.classifier[-1].kernel_size)  # change number of outputs to 1
+    w = [math.log(p1), math.log(p2), math.log(p2)]
+    model.classifier[-1].weight.data[:] = 0
+    model.classifier[-1].bias.data = torch.as_tensor(w)
+
     if device.type == "cuda":
         model = torch.nn.DataParallel(model)
     model.to(device)
 
     # Set up optimizer
     optim = torch.optim.SGD(model.parameters(), lr=1e-5, momentum=0.9)
+    op_ft = torch.optim.SGD(model.module.classifier[-1].parameters(), lr=1e-6, momentum=0.9)
     if lr_step_period is None:
         lr_step_period = math.inf
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
 
     # Compute mean and std
+    # tasks = ["LargeFrame", "SmallFrame", "LargeTrace", "SmallTrace", "LargeApex", "SmallApex", "LargeBase", "SmallBase"]
+    # dataset = echonet.datasets.Echo(split="train", target_type=tasks)
+    # os.makedirs("trace/large", exist_ok=True)
+    # os.makedirs("trace/small", exist_ok=True)
+    # os.makedirs("trace/test", exist_ok=True)
+    # for i in range(10):
+    #     (_, (large_frame, small_frame, large_trace, small_trace, large_apex, small_apex, large_base, small_base)) = dataset[i]
+    #     import PIL
+    #     x = large_frame.astype(np.uint8)
+    #     x = x.transpose((1, 2, 0))
+    #     x[large_trace > 0, 2] = 255
+    #     x[scipy.ndimage.binary_dilation(large_apex), 0] = 255
+    #     x[scipy.ndimage.binary_dilation(large_base), 1] = 255
+    #     # x[large_apex > 0, 0] = 255
+    #     # x[small_apex > 0, 1] = 255
+    #     PIL.Image.fromarray(x).save("trace/large/img_{:06d}.tif".format(i))
+    # breakpoint()
+    # for basename in sorted(dataset.trace.keys()):
+    #     t = dataset.trace[basename]
+    #     t = t[sorted(t.keys())[0]]
+    #     fig = plt.figure(figsize=(9, 9))
+    #     for (i, (x1, y1, x2, y2)) in enumerate(t):
+    #         plt.text(x1, y1, str(i))
+    #         plt.plot([x1, x2], [y1, y2])
+    #     
+    #     
+    #     plt.tight_layout()
+    #     plt.savefig("trace/test/{}.pdf".format(basename))
+    #     plt.close(fig)
+
+    # breakpoint()
+
     mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train"))
-    tasks = ["LargeFrame", "SmallFrame", "LargeTrace", "SmallTrace"]
-    kwargs = {"target_type": tasks,
-              "mean": mean,
-              "std": std
-              }
+    tasks = ["LargeFrame", "SmallFrame", "LargeTrace", "SmallTrace", "LargeApex", "SmallApex", "LargeBase", "SmallBase"]
+    kwargs = {
+        "target_type": tasks,
+        "mean": mean,
+        "std": std
+    }
 
     # Set up datasets and dataloaders
     train_dataset = echonet.datasets.Echo(split="train", **kwargs)
@@ -142,7 +183,10 @@ def run(num_epochs=50,
                 for i in range(torch.cuda.device_count()):
                     torch.cuda.reset_peak_memory_stats(i)
 
-                loss, large_inter, large_union, small_inter, small_union = echonet.utils.segmentation.run_epoch(model, dataloaders[phase], phase == "train", optim, device)
+                if False: # epoch == 0:
+                    loss, large_inter, large_union, small_inter, small_union = echonet.utils.segmentation.run_epoch(model, dataloaders[phase], phase == "train", op_ft, device)
+                else:
+                    loss, large_inter, large_union, small_inter, small_union = echonet.utils.segmentation.run_epoch(model, dataloaders[phase], phase == "train", optim, device)
                 overall_dice = 2 * (large_inter.sum() + small_inter.sum()) / (large_union.sum() + large_inter.sum() + small_union.sum() + small_inter.sum())
                 large_dice = 2 * large_inter.sum() / (large_union.sum() + large_inter.sum())
                 small_dice = 2 * small_inter.sum() / (small_union.sum() + small_inter.sum())
@@ -181,6 +225,7 @@ def run(num_epochs=50,
 
         if run_test:
             # Run on validation and test
+            # for split in ["val", "test"]:
             for split in ["val", "test"]:
                 dataset = echonet.datasets.Echo(split=split, **kwargs)
                 dataloader = torch.utils.data.DataLoader(dataset,
@@ -200,6 +245,62 @@ def run(num_epochs=50,
                 f.write("{} dice (small):   {:.4f} ({:.4f} - {:.4f})\n".format(split, *echonet.utils.bootstrap(small_inter, small_union, echonet.utils.dice_similarity_coefficient)))
                 f.flush()
 
+
+    tasks = ["EF", "LargeFrame", "SmallFrame", "LargeTrace", "SmallTrace", "LargeApex", "SmallApex", "LargeBase", "SmallBase"]
+    kwargs = {
+        "target_type": tasks,
+        "mean": mean,
+        "std": std
+    }
+    dataset = echonet.datasets.Echo(split="test", **kwargs)
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                             batch_size=batch_size, num_workers=num_workers, shuffle=False, pin_memory=(device.type == "cuda"))
+
+
+    ef_real = []
+    ef_pred = []
+    with torch.no_grad():
+        with tqdm.tqdm(total=len(dataloader)) as pbar:
+            for (_, (ef, large_frame, small_frame, large_trace, small_trace, large_apex, small_apex, large_base, small_base)) in dataloader:
+                ef_real.extend(ef.numpy())
+                # Run prediction for diastolic frames and compute loss
+                large_frame = large_frame.to(device)
+                yhat = model(large_frame)["out"]
+                # trace = torch.sigmoid(yhat[:, 0, :, :])
+                # apex = torch.sigmoid(yhat[:, 1, :, :])
+                # base = torch.sigmoid(yhat[:, 2, :, :])
+                trace = yhat[:, 0, :, :]
+                apex = yhat[:, 1, :, :]
+                base = yhat[:, 2, :, :]
+
+                edv = ((trace > 0).sum(2) ** 2).sum(1)
+
+                small_frame = small_frame.to(device)
+                yhat = model(small_frame)["out"]
+                # trace = torch.sigmoid(yhat[:, 0, :, :])
+                # apex = torch.sigmoid(yhat[:, 1, :, :])
+                # base = torch.sigmoid(yhat[:, 2, :, :])
+                trace = yhat[:, 0, :, :]
+                apex = yhat[:, 1, :, :]
+                base = yhat[:, 2, :, :]
+                esv = ((trace > 0).sum(2) ** 2).sum(1)
+                ef_pred.extend((100 * (1 - esv / edv)).cpu().numpy())
+
+                print(sklearn.metrics.r2_score(ef_real, ef_pred))
+    breakpoint()
+    fig = plt.figure(figsize=(3, 3))
+    plt.scatter(ef_real, ef_pred, s=1, color="k")
+    plt.xlabel("Real")
+    plt.ylabel("Prediction")
+    plt.axis([0, 100, 0, 100])
+    plt.tight_layout()
+    plt.savefig("seg_ef_prediction.pdf")
+    plt.close(fig)
+    mask = [0 < e < 100 for e in ef_pred]
+    sklearn.metrics.r2_score([e for (e, m) in zip(ef_real, mask) if m], [e for (e, m) in zip(ef_pred, mask) if m])
+
+
+
     # Saving videos with segmentations
     dataset = echonet.datasets.Echo(split="test",
                                     target_type=["Filename", "LargeIndex", "SmallIndex"],  # Need filename for saving, and human-selected frames to annotate
@@ -210,6 +311,8 @@ def run(num_epochs=50,
 
     # Save videos with segmentation
     if save_segmentation and not all(os.path.isfile(os.path.join(output, "videos", f)) for f in dataloader.dataset.fnames):
+        # TODO: move to separate function
+        # TODO: don't do a binary all-done check (if half of files are done, just run on that half)
         # Only run if missing videos
 
         model.eval()
@@ -229,9 +332,13 @@ def run(num_epochs=50,
                     start = 0
                     x = x.numpy()
                     for (i, (filename, offset)) in enumerate(zip(filenames, length)):
+                        print(filename)
                         # Extract one video and segmentation predictions
                         video = x[start:(start + offset), ...]
-                        logit = y[start:(start + offset), 0, :, :]
+                        pred = y[start:(start + offset), :, :, :]
+                        logit = pred[:, 0, :, :]
+                        apex = pred[:, 1, :, :]
+                        base = pred[:, 2, :, :]
 
                         # Un-normalize video
                         video *= std.reshape(1, 3, 1, 1)
@@ -247,6 +354,14 @@ def run(num_epochs=50,
                         # If a pixel is in the segmentation, saturate blue channel
                         # Leave alone otherwise
                         video[:, 0, :, w:] = np.maximum(255. * (logit > 0), video[:, 0, :, w:])  # pylint: disable=E1111
+
+                        apex = 1 / (1 + np.exp(-apex))
+                        apex /= apex.max((1, 2)).reshape((-1, 1, 1))
+                        video[:, 1, :, w:] = np.maximum(255. * apex, video[:, 1, :, w:])  # pylint: disable=E1111
+
+                        base = 1 / (1 + np.exp(-base))
+                        base /= base.max((1, 2)).reshape((-1, 1, 1))
+                        video[:, 2, :, w:] = np.maximum(255. * base, video[:, 2, :, w:])  # pylint: disable=E1111
 
                         # Add blank canvas under pair of videos
                         video = np.concatenate((video, np.zeros_like(video)), 2)
@@ -339,6 +454,8 @@ def run_epoch(model, dataloader, train, optim, device):
     """
 
     total = 0.
+    total2 = 0
+    total3 = 0
     n = 0
 
     pos = 0
@@ -359,7 +476,7 @@ def run_epoch(model, dataloader, train, optim, device):
 
     with torch.set_grad_enabled(train):
         with tqdm.tqdm(total=len(dataloader)) as pbar:
-            for (_, (large_frame, small_frame, large_trace, small_trace)) in dataloader:
+            for (_, (large_frame, small_frame, large_trace, small_trace, large_apex, small_apex, large_base, small_base)) in dataloader:
                 # Count number of pixels in/out of human segmentation
                 pos += (large_trace == 1).sum().item()
                 pos += (small_trace == 1).sum().item()
@@ -374,9 +491,14 @@ def run_epoch(model, dataloader, train, optim, device):
 
                 # Run prediction for diastolic frames and compute loss
                 large_frame = large_frame.to(device)
-                large_trace = large_trace.to(device)
+                target = torch.stack((large_trace, large_apex, large_base), dim=1)
+                target = target.to(device)
                 y_large = model(large_frame)["out"]
-                loss_large = torch.nn.functional.binary_cross_entropy_with_logits(y_large[:, 0, :, :], large_trace, reduction="sum")
+                # loss_large = torch.nn.functional.binary_cross_entropy_with_logits(y_large, target, reduction="sum")
+                l = torch.nn.functional.binary_cross_entropy_with_logits(y_large, target, reduction="none")
+                l = l.sum((0, 2, 3))
+                l[1:] *= 100
+                loss_large = l
                 # Compute pixel intersection and union between human and computer segmentations
                 large_inter += np.logical_and(y_large[:, 0, :, :].detach().cpu().numpy() > 0., large_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
                 large_union += np.logical_or(y_large[:, 0, :, :].detach().cpu().numpy() > 0., large_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
@@ -385,9 +507,13 @@ def run_epoch(model, dataloader, train, optim, device):
 
                 # Run prediction for systolic frames and compute loss
                 small_frame = small_frame.to(device)
-                small_trace = small_trace.to(device)
+                target = torch.stack((small_trace, small_apex, small_base), dim=1)
+                target = target.to(device)
                 y_small = model(small_frame)["out"]
-                loss_small = torch.nn.functional.binary_cross_entropy_with_logits(y_small[:, 0, :, :], small_trace, reduction="sum")
+                l = torch.nn.functional.binary_cross_entropy_with_logits(y_small, target, reduction="none")
+                l = l.sum((0, 2, 3))
+                l[1:] *= 100
+                loss_small = l
                 # Compute pixel intersection and union between human and computer segmentations
                 small_inter += np.logical_and(y_small[:, 0, :, :].detach().cpu().numpy() > 0., small_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
                 small_union += np.logical_or(y_small[:, 0, :, :].detach().cpu().numpy() > 0., small_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
@@ -398,17 +524,19 @@ def run_epoch(model, dataloader, train, optim, device):
                 loss = (loss_large + loss_small) / 2
                 if train:
                     optim.zero_grad()
-                    loss.backward()
+                    loss.sum().backward()
                     optim.step()
 
                 # Accumulate losses and compute baselines
-                total += loss.item()
+                total += loss[0].item()
+                total2 += loss[1].item()
+                total3 += loss[2].item()
                 n += large_trace.size(0)
                 p = pos / (pos + neg)
                 p_pix = (pos_pix + 1) / (pos_pix + neg_pix + 2)
 
                 # Show info on process bar
-                pbar.set_postfix_str("{:.4f} ({:.4f}) / {:.4f} {:.4f}, {:.4f}, {:.4f}".format(total / n / 112 / 112, loss.item() / large_trace.size(0) / 112 / 112, -p * math.log(p) - (1 - p) * math.log(1 - p), (-p_pix * np.log(p_pix) - (1 - p_pix) * np.log(1 - p_pix)).mean(), 2 * large_inter / (large_union + large_inter), 2 * small_inter / (small_union + small_inter)))
+                pbar.set_postfix_str("{:.4f} ({:.4f}) / {:.4f} {:.4f}, {:.4f}, {:.4f}, {:.4f}, {:.4f}".format(total / n / 112 / 112, loss[0].item() / large_trace.size(0) / 112 / 112, -p * math.log(p) - (1 - p) * math.log(1 - p), (-p_pix * np.log(p_pix) - (1 - p_pix) * np.log(1 - p_pix)).mean(), total2 / n / 112 / 112, total3 / n / 112 / 112, 2 * large_inter / (large_union + large_inter), 2 * small_inter / (small_union + small_inter)))
                 pbar.update()
 
     large_inter_list = np.array(large_inter_list)

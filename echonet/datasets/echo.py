@@ -229,16 +229,36 @@ class Echo(torchvision.datasets.VisionDataset):
                 target.append(video[:, self.frames[key][0], :, :])
             elif t in ["LargeTrace", "SmallTrace"]:
                 if t == "LargeTrace":
-                    t = self.trace[key][self.frames[key][-1]]
+                    trace = self.trace[key][self.frames[key][-1]]
                 else:
-                    t = self.trace[key][self.frames[key][0]]
-                x1, y1, x2, y2 = t[:, 0], t[:, 1], t[:, 2], t[:, 3]
+                    trace = self.trace[key][self.frames[key][0]]
+                x1, y1, x2, y2 = trace[:, 0], trace[:, 1], trace[:, 2], trace[:, 3]
                 x = np.concatenate((x1[1:], np.flip(x2[1:])))
                 y = np.concatenate((y1[1:], np.flip(y2[1:])))
 
                 r, c = skimage.draw.polygon(np.rint(y).astype(np.int), np.rint(x).astype(np.int), (video.shape[2], video.shape[3]))
                 mask = np.zeros((video.shape[2], video.shape[3]), np.float32)
                 mask[r, c] = 1
+                target.append(mask)
+            elif t in ["LargeApex", "LargeBase", "SmallApex", "SmallBase"]:
+                if t == "LargeApex" or t == "LargeBase":
+                    trace = self.trace[key][self.frames[key][-1]]
+                else:
+                    trace = self.trace[key][self.frames[key][0]]
+
+                if t == "LargeApex" or t == "SmallApex":
+                    x, y = trace[0, 0], trace[0, 1]
+                else:
+                    x, y = trace[0, 2], trace[0, 3]
+                x = int(x)
+                y = int(y)
+
+                mask = np.zeros((video.shape[2], video.shape[3]), np.float32)
+                try:
+                    # TODO: why does this sometimes fall off image
+                    mask[y, x] = 1
+                except IndexError:
+                    pass
                 target.append(mask)
             else:
                 if self.split == "CLINICAL_TEST" or self.split == "EXTERNAL_TEST":
