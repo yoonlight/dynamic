@@ -43,7 +43,7 @@ def loadvideo(filename: str) -> np.ndarray:
         if not ret:
             raise ValueError("Failed to load frame #{} of {}.".format(count, filename))
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         v[count] = frame
 
     v = v.transpose((3, 0, 1, 2))
@@ -76,6 +76,10 @@ def savevideo(filename: str, array: np.ndarray, fps: typing.Union[float, int] = 
         fourcc = 0x00000021
         fourcc = 0x00000021
         fourcc = cv2.VideoWriter_fourcc('V','P','8','0')
+    elif os.path.splitext(filename)[-1] == ".webm":
+        fourcc = cv2.VideoWriter_fourcc(*'vp80')
+    else:
+        asndksadnk
     out = cv2.VideoWriter(filename, fourcc, fps, (width, height))
 
     for i in range(f):
