@@ -12,10 +12,16 @@
     <option value="/DD" {% if user == "DD"%} selected {% endif %}>DD</option>
   </select>
   {% if user != "" %}
-  <h1>Videos</h1>
+  <h1> Unlabeled Videos ({{ todo|length }} / {{ todo|length + done|length }})</h1>
   <ul>
-    {% for video in videos %}
-    <li><a href="/{{ user }}/{{ video }}">{{ loop.index }} {{ video }}</a></li>
+    {% for video in todo %}
+    <li><a href="/{{ user }}/{{ video }}">{{ video }}</a></li>
+    {% endfor %}
+  </ul>
+  <h1> Labeled Videos ({{ done|length }} / {{ todo|length + done|length }})</h1>
+  <ul>
+    {% for video in done %}
+    <li><a href="/{{ user }}/{{ video }}">{{ video }}</a></li>
     {% endfor %}
   </ul>
   {% endif %}

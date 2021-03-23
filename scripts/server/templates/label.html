@@ -9,26 +9,26 @@
       message = "";
       for (x of ["EF", "Interpretable"]) {
         var radios = document.getElementsByName(x);
-        console.log(x, radios)
-          for (var i = 0, length = radios.length; i < length; i++) {
-            if (radios[i].checked) {
-              // do whatever you want with the checked radio
-              message += x + " " + radios[i].value + "\n";
-              console.log(message)
+        for (var i = 0, length = radios.length; i < length; i++) {
+          if (radios[i].checked) {
+            message += x + ":" + radios[i].value + "\n";
 
-              // only one radio can be logically checked, don't check the rest
-              break;
-            }
+            // only one radio can be logically checked, don't check the rest
+            break;
           }
+        }
       }
-      const http = new XMLHttpRequest();
-      http.open("POST", "");
-      http.send(message);
+      console.log(message)
+      if (message != "") {
+        const http = new XMLHttpRequest();
+        http.open("POST", "");
+        http.send(message);
+      }
     }
   </script>
 </head>
 
-<body onclick="send()">
+<body>
   <center>
     Patient #{{ index }} / {{ total }}
     <br />
@@ -43,39 +43,34 @@
     <br />
     <br />
 
-    <video width="300" height="200" controls>
-      <source src="/video/{{ video }}.mp4" type="video/mp4">
+    <video width="{{ width }}" height="{{ height }}" controls loop autoplay>
+      <source src="/video/{{ video }}.webm" type="video/webm">
       Your browser does not support the video tag.
     </video>
 
     <br />
     <br />
 
-    <table>
+    <table onclick="send()">
+      {% for (class, value) in labels %}
       <tr>
+        <th>{{ class }}</th>
         <td>
-          EF
         </td>
         <td>
-          <input type="radio" id="EF_Normal" name="EF" value="Normal" {% if "EF" in data and data["EF"] == "Normal" %} checked {% endif %}>
-          <label for="Normal">Normal</label>
-          <input type="radio" id="EF_Low" name="EF" value="Low" {% if "EF" in data and data["EF"] == "Low" %} checked {% endif %}>
-          <label for="Low">Low</label>
+          <table>
+            {% for v in value %}
+            <tr>
+              <td>
+                <input type="radio" id="{{ class }}_{{ v }}" name="{{ class }}" value="{{ v }}" {% if class in data and data[class] == v %} checked {% endif %}>
+                <label for="{{ class }}_{{ v }}">{{ v }}</label>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
         </td>
       </tr>
-      <tr>
-        <td>
-          Interpretable
-        </td>
-        <td>
-          <input type="radio" id="Interpretable_Yes" name="Interpretable" value="Yes" {% if "Interpretable" in data and data["Interpretable"] == "Yes" %} checked {% endif %}>
-          <label for="Yes">Yes</label>
-          <input type="radio" id="Interpretable_Partial" name="Interpretable" value="Partial" {% if "Interpretable" in data and data["Interpretable"] == "Partial" %} checked {% endif %}>
-          <label for="Partial">Partial</label>
-          <input type="radio" id="Interpretable_Low" name="Interpretable" value="Low" {% if "Interpretable" in data and data["Interpretable"] == "No" %} checked {% endif %}>
-          <label for="No">No</label>
-        </td>
-      </tr>
+      {% endfor %}
     </table>
   </center>
 </body>

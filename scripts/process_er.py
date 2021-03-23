@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import PIL
 import click
 import cv2
 import numpy as np
 import os
 import tqdm
+import skimage.segmentation
 
 import echonet
 
@@ -15,6 +17,16 @@ import echonet
 def main(src, dest):
     os.makedirs(dest, exist_ok=True)
     for filename in tqdm.tqdm(sorted(os.listdir(src))):
+        output = os.path.join(dest, os.path.splitext(filename)[0] + ".webm")
+        if not os.path.isfile(output):
+            capture = cv2.VideoCapture(os.path.join(src, filename))
+            fps = capture.get(cv2.CAP_PROP_FPS)
+            video = echonet.utils.loadvideo(os.path.join(src, filename))
+            video = test(video)
+            # video.save(os.path.join(dest, os.path.splitext(filename)[0] + ".png"))
+            # continue
+            echonet.utils.savevideo(output, video, fps)
+        continue
         # if filename in ["VID11216.mp4", "VID11713.mp4", "VID14180.mp4", "VID14278.mp4", "VID14441.mp4", "VID1480.mp4", "VID1481.mp4", "VID16642.mp4", "VID16885.mp4"]:
         #     continue
         # output = os.path.join(dest, os.path.splitext(filename)[0] + ".avi")
@@ -39,6 +51,20 @@ def crop(video):
 
 def resize(video, size=(112, 112)):
     return np.array(list(map(lambda x: cv2.resize(x, size, interpolation=cv2.INTER_AREA), video.transpose((1, 2, 3, 0))))).transpose((3, 0, 1, 2))
+
+def test(video):
+    (c, f, h, w) = video.shape
+    assert c == 3
+    std = video.std(1)
+    r = video.max(1) - video.min(1)
+    r = r.sum(0)
+    r = ((r > 0) * 255).astype(np.uint8)
+    # r = skimage.segmentation.flood_fill(r, (h // 2, w // 2), 128)
+    mask = skimage.segmentation.flood(r, (h // 2, w // 2))
+    video[:, :, ~mask] = 0
+    # return PIL.Image.fromarray(((r > 0) * 255).astype(np.uint8))
+    return video
+
 
 def mask(video):
     h = video.shape[2]
