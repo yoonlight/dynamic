@@ -211,8 +211,8 @@ class VideoResNet(nn.Module):
 
         self.layer1 = self._make_layer(block, conv_makers[0], 64, layers[0], dilation=1)
         self.layer2 = self._make_layer(block, conv_makers[1], 128, layers[1], dilation=2)
-        self.layer3 = self._make_layer(block, conv_makers[2], 256, layers[2], dilation=2) # I think this should be 4?
-        self.layer4 = self._make_layer(block, conv_makers[3], 512, layers[3], dilation=2) # I think this should be 8?
+        self.layer3 = self._make_layer(block, conv_makers[2], 256, layers[2], dilation=4) # I think this should be 4?
+        self.layer4 = self._make_layer(block, conv_makers[3], 512, layers[3], dilation=8) # I think this should be 8?
 
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
@@ -229,8 +229,7 @@ class VideoResNet(nn.Module):
         self.classifier = DeepLabHead(512, num_classes)
 
     def forward(self, x):
-        x = torch.unsqueeze(x, 2)
-        input_shape = x.shape[-2:]
+        input_shape = x.shape[-3:]
 
         x = self.stem(x)
 
@@ -249,8 +248,7 @@ class VideoResNet(nn.Module):
         # x = self.fc(x)
         x = self.classifier(x)
 
-        x = torch.squeeze(x, 2)
-        x = torch.nn.functional.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
+        x = torch.nn.functional.interpolate(x, size=input_shape, mode='trilinear', align_corners=False)
 
         return {"out": x}
 

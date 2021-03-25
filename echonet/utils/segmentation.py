@@ -22,8 +22,8 @@ def run(num_epochs=50,
         output=None,
         device=None,
         n_train_patients=None,
-        num_workers=4,
-        batch_size=20,
+        num_workers=8,
+        batch_size=8,
         seed=0,
         lr_step_period=None,
         save_segmentation=False,
@@ -143,7 +143,7 @@ def run(num_epochs=50,
 
     # breakpoint()
 
-    mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train"))
+    mean, std = echonet.utils.get_mean_and_std(echonet.datasets.Echo(split="train"), num_workers=num_workers)
     tasks = ["LargeFrame", "SmallFrame", "LargeTrace", "SmallTrace", "LargeApex", "SmallApex", "LargeBase", "SmallBase"]
     kwargs = {
         "target_type": tasks,
@@ -339,7 +339,6 @@ def run(num_epochs=50,
     mask = [abs(r - p) < 10 for (r, p) in zip(ef_real, ef_pred)]
     print(sklearn.metrics.r2_score([e for (e, m) in zip(ef_real, mask) if m], [e for (e, m) in zip(ef_pred, mask) if m]))
     print(scipy.stats.linregress([e for (e, m) in zip(ef_real, mask) if m], [e for (e, m) in zip(ef_pred, mask) if m]))
-    breakpoint()
 
 
 
@@ -520,27 +519,32 @@ def run_epoch(model, dataloader, train, optim, device):
         with tqdm.tqdm(total=len(dataloader)) as pbar:
             for (_, (large_frame, small_frame, large_trace, small_trace, large_apex, small_apex, large_base, small_base)) in dataloader:
                 # Count number of pixels in/out of human segmentation
-                pos += (large_trace == 1).sum().item()
-                pos += (small_trace == 1).sum().item()
-                neg += (large_trace == 0).sum().item()
-                neg += (small_trace == 0).sum().item()
+                large_mask = ~torch.isnan(large_trace).any(3).any(2)
+                small_mask = ~torch.isnan(small_trace).any(3).any(2)
+                pos += (large_trace[large_mask] == 1).sum().item()
+                pos += (small_trace[small_mask] == 1).sum().item()
+                neg += (large_trace[large_mask] == 0).sum().item()
+                neg += (small_trace[small_mask] == 0).sum().item()
 
                 # Count number of pixels in/out of computer segmentation
-                pos_pix += (large_trace == 1).sum(0).to("cpu").detach().numpy()
-                pos_pix += (small_trace == 1).sum(0).to("cpu").detach().numpy()
-                neg_pix += (large_trace == 0).sum(0).to("cpu").detach().numpy()
-                neg_pix += (small_trace == 0).sum(0).to("cpu").detach().numpy()
+                pos_pix += (large_trace[large_mask] == 1).sum(0).numpy()
+                pos_pix += (small_trace[small_mask] == 1).sum(0).numpy()
+                neg_pix += (large_trace[large_mask] == 0).sum(0).numpy()
+                neg_pix += (small_trace[small_mask] == 0).sum(0).numpy()
 
                 # Run prediction for diastolic frames and compute loss
                 large_frame = large_frame.to(device)
                 target = torch.stack((large_trace, large_apex, large_base), dim=1)
+                target = target.transpose(1, 2)[large_mask]
                 target = target.to(device)
                 y_large = model(large_frame)["out"]
+                y_large = y_large.transpose(1, 2)[large_mask]
                 # loss_large = torch.nn.functional.binary_cross_entropy_with_logits(y_large, target, reduction="sum")
                 l = torch.nn.functional.binary_cross_entropy_with_logits(y_large, target, reduction="none")
                 l = l.sum((0, 2, 3))
                 l[1:] *= 100
                 loss_large = l
+                large_trace = large_trace[large_mask]
                 # Compute pixel intersection and union between human and computer segmentations
                 large_inter += np.logical_and(y_large[:, 0, :, :].detach().cpu().numpy() > 0., large_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
                 large_union += np.logical_or(y_large[:, 0, :, :].detach().cpu().numpy() > 0., large_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
@@ -550,12 +554,15 @@ def run_epoch(model, dataloader, train, optim, device):
                 # Run prediction for systolic frames and compute loss
                 small_frame = small_frame.to(device)
                 target = torch.stack((small_trace, small_apex, small_base), dim=1)
+                target = target.transpose(1, 2)[small_mask]
                 target = target.to(device)
                 y_small = model(small_frame)["out"]
+                y_small = y_small.transpose(1, 2)[small_mask]
                 l = torch.nn.functional.binary_cross_entropy_with_logits(y_small, target, reduction="none")
                 l = l.sum((0, 2, 3))
                 l[1:] *= 100
                 loss_small = l
+                small_trace = small_trace[small_mask]
                 # Compute pixel intersection and union between human and computer segmentations
                 small_inter += np.logical_and(y_small[:, 0, :, :].detach().cpu().numpy() > 0., small_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
                 small_union += np.logical_or(y_small[:, 0, :, :].detach().cpu().numpy() > 0., small_trace[:, :, :].detach().cpu().numpy() > 0.).sum()
