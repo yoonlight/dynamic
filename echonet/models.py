@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # from ..utils import load_state_dict_from_url
 
@@ -165,8 +166,8 @@ class BasicStem(nn.Sequential):
     """
     def __init__(self):
         super(BasicStem, self).__init__(
-            nn.Conv3d(3, 64, kernel_size=(3, 7, 7), dilation=(1, 2, 2),
-                      padding=(1, 6, 6), bias=False),
+            nn.Conv3d(3, 64, kernel_size=(3, 7, 7), stride=(1, 2, 2),
+                      padding=(1, 3, 3), bias=False),
             nn.BatchNorm3d(64),
             nn.ReLU(inplace=True))
 
@@ -210,8 +211,8 @@ class VideoResNet(nn.Module):
 
         self.layer1 = self._make_layer(block, conv_makers[0], 64, layers[0], dilation=1)
         self.layer2 = self._make_layer(block, conv_makers[1], 128, layers[1], dilation=2)
-        self.layer3 = self._make_layer(block, conv_makers[2], 256, layers[2], dilation=2)
-        self.layer4 = self._make_layer(block, conv_makers[3], 512, layers[3], dilation=2)
+        self.layer3 = self._make_layer(block, conv_makers[2], 256, layers[2], dilation=2) # I think this should be 4?
+        self.layer4 = self._make_layer(block, conv_makers[3], 512, layers[3], dilation=2) # I think this should be 8?
 
         self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
@@ -224,12 +225,14 @@ class VideoResNet(nn.Module):
                 if isinstance(m, Bottleneck):
                     nn.init.constant_(m.bn3.weight, 0)
 
-        self.classifier = nn.Conv3d(512, num_classes, kernel_size=(1, 1, 1))
+        # self.classifier = nn.Conv3d(512, num_classes, kernel_size=(1, 1, 1))
+        self.classifier = DeepLabHead(512, num_classes)
 
     def forward(self, x):
         x = torch.unsqueeze(x, 2)
+        input_shape = x.shape[-2:]
+
         x = self.stem(x)
-        # print(x.shape)
 
         x = self.layer1(x)
         # print(x.shape)
@@ -245,7 +248,9 @@ class VideoResNet(nn.Module):
         # x = x.flatten(1)
         # x = self.fc(x)
         x = self.classifier(x)
+
         x = torch.squeeze(x, 2)
+        x = torch.nn.functional.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
 
         return {"out": x}
 
@@ -350,3 +355,73 @@ def r2plus1d_18(pretrained=False, progress=True, **kwargs):
                          layers=[2, 2, 2, 2],
                          stem=R2Plus1dStem, **kwargs)
 
+
+
+
+class DeepLabHead(nn.Sequential):
+    def __init__(self, in_channels, num_classes):
+        super(DeepLabHead, self).__init__(
+            ASPP(in_channels, [12, 24, 36]),
+            nn.Conv3d(256, 256, 3, padding=1, bias=False),
+            nn.BatchNorm3d(256),
+            nn.ReLU(),
+            nn.Conv3d(256, num_classes, 1)
+        )
+
+
+class ASPPConv(nn.Sequential):
+    def __init__(self, in_channels, out_channels, dilation):
+        modules = [
+            nn.Conv3d(in_channels, out_channels, 3, padding=dilation, dilation=dilation, bias=False),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU()
+        ]
+        super(ASPPConv, self).__init__(*modules)
+
+
+class ASPPPooling(nn.Sequential):
+    def __init__(self, in_channels, out_channels):
+        super(ASPPPooling, self).__init__(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU())
+
+    def forward(self, x):
+        size = x.shape[-3:]
+        for mod in self:
+            x = mod(x)
+        batch, channels, *_ = x.shape
+        return F.interpolate(x, size=size, mode='trilinear', align_corners=False)
+
+
+class ASPP(nn.Module):
+    def __init__(self, in_channels, atrous_rates, out_channels=256):
+        super(ASPP, self).__init__()
+        modules = []
+        modules.append(nn.Sequential(
+            nn.Conv3d(in_channels, out_channels, 1, bias=False),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU()))
+
+        rates = tuple(atrous_rates)
+        for rate in rates:
+            modules.append(ASPPConv(in_channels, out_channels, rate))
+
+        modules.append(ASPPPooling(in_channels, out_channels))
+
+        self.convs = nn.ModuleList(modules)
+
+        self.project = nn.Sequential(
+            nn.Conv3d(len(self.convs) * out_channels, out_channels, 1, bias=False),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(),
+            nn.Dropout(0.5))
+
+    def forward(self, x):
+        res = []
+        for conv in self.convs:
+            res.append(conv(x))
+        res = torch.cat(res, dim=1)
+        ans = self.project(res)
+        return ans

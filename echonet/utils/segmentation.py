@@ -90,13 +90,14 @@ def run(num_epochs=50,
 
     p1 = 0.09
     p2 = 1 / 112 / 112
-    model.classifier = torch.nn.Conv3d(model.classifier.in_channels, 3, kernel_size=model.classifier.kernel_size)  # change number of outputs to 1
+    # model.classifier = torch.nn.Conv3d(model.classifier.in_channels, 3, kernel_size=model.classifier.kernel_size)  # change number of outputs to 1
+    model.classifier[-1] = torch.nn.Conv3d(model.classifier[-1].in_channels, 3, kernel_size=model.classifier[-1].kernel_size)  # change number of outputs to 1
     # model.classifier[-1] = torch.nn.Conv2d(model.classifier[-1].in_channels, 3, kernel_size=model.classifier[-1].kernel_size)  # change number of outputs to 1
     w = [math.log(p1), math.log(p2), math.log(p2)]
-    # model.classifier[-1].weight.data[:] = 0
-    # model.classifier[-1].bias.data = torch.as_tensor(w)
-    model.classifier.weight.data[:] = 0
-    model.classifier.bias.data = torch.as_tensor(w)
+    model.classifier[-1].weight.data[:] = 0
+    model.classifier[-1].bias.data = torch.as_tensor(w)
+    # model.classifier.weight.data[:] = 0
+    # model.classifier.bias.data = torch.as_tensor(w)
 
     if device.type == "cuda":
         model = torch.nn.DataParallel(model)
