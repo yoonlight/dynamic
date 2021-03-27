@@ -16,7 +16,7 @@ import tqdm
 import echonet
 
 
-def run(num_epochs=50,
+def run(num_epochs=33,
         modelname="deeplabv3_resnet50",
         pretrained=False,
         output=None,
@@ -180,6 +180,9 @@ def run(num_epochs=50,
             f.write("Resuming from epoch {}\n".format(epoch_resume))
         except FileNotFoundError:
             f.write("Starting run from scratch\n")
+        # manually lower lr to 1e-6 (from 1e-5) at beginning of epoch 14 (0-index)
+        optim.param_groups[0]["lr"] = 1e-6
+        print(optim)
 
         for epoch in range(epoch_resume, num_epochs):
             print("Epoch #{}".format(epoch), flush=True)
@@ -241,6 +244,17 @@ def run(num_epochs=50,
                 overall_dice = 2 * (large_inter + small_inter) / (large_union + large_inter + small_union + small_inter)
                 large_dice = 2 * large_inter / (large_union + large_inter)
                 small_dice = 2 * small_inter / (small_union + small_inter)
+
+                for (title, dice) in [("Overall", overall_dice), ("Diastole", large_dice), ("Systole", small_dice)]:
+                    fig = plt.figure(figsize=(3, 2))
+                    plt.hist(large_dice, bins=np.arange(0, 1 + 1e-6, 0.01))
+                    plt.xlabel("DSC")
+                    plt.ylabel("Videos")
+                    plt.xlim([0, 1])
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(output, "hist_{}_{}.pdf".format(title.lower(), split)))
+                    plt.close(fig)
+
                 with open(os.path.join(output, "{}_dice.csv".format(split)), "w") as g:
                     g.write("Filename, Overall, Large, Small\n")
                     for (filename, overall, large, small) in zip(dataset.fnames, overall_dice, large_dice, small_dice):
@@ -271,9 +285,15 @@ def run(num_epochs=50,
         with tqdm.tqdm(total=len(dataloader)) as pbar:
             for (_, (filename, ef, large_frame, small_frame, large_trace, small_trace, large_apex, small_apex, large_base, small_base)) in dataloader:
                 ef_real.extend(ef.numpy())
+                large_mask = ~torch.isnan(large_trace).any(3).any(2)
+                small_mask = ~torch.isnan(small_trace).any(3).any(2)
+
                 # Run prediction for diastolic frames and compute loss
                 large_frame = large_frame.to(device)
                 yhat = model(large_frame)["out"]
+
+                large_trace = large_trace[large_mask]
+                yhat = yhat.transpose(1, 2)[large_mask]
                 # trace = torch.sigmoid(yhat[:, 0, :, :])
                 # apex = torch.sigmoid(yhat[:, 1, :, :])
                 # base = torch.sigmoid(yhat[:, 2, :, :])
@@ -296,6 +316,9 @@ def run(num_epochs=50,
 
                 small_frame = small_frame.to(device)
                 yhat = model(small_frame)["out"]
+
+                small_trace = small_trace[small_mask]
+                yhat = yhat.transpose(1, 2)[small_mask]
                 # trace = torch.sigmoid(yhat[:, 0, :, :])
                 # apex = torch.sigmoid(yhat[:, 1, :, :])
                 # base = torch.sigmoid(yhat[:, 2, :, :])
@@ -336,9 +359,10 @@ def run(num_epochs=50,
     plt.savefig("seg_ef_prediction.pdf")
     plt.close(fig)
     mask = [0 < e < 100 for e in ef_pred]
-    mask = [abs(r - p) < 10 for (r, p) in zip(ef_real, ef_pred)]
+    mask = [abs(r - p) < 20 for (r, p) in zip(ef_real, ef_pred)]
     print(sklearn.metrics.r2_score([e for (e, m) in zip(ef_real, mask) if m], [e for (e, m) in zip(ef_pred, mask) if m]))
     print(scipy.stats.linregress([e for (e, m) in zip(ef_real, mask) if m], [e for (e, m) in zip(ef_pred, mask) if m]))
+    breakpoint()
 
 
 
