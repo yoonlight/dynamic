@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import time
+import matplotlib.pyplot as plt
 import collections
 import pydicom
 import io
@@ -28,7 +30,7 @@ def main(src, dest):
             header = f.readline().decode("utf-8").strip().split(",")
             assert header == ['anon_patient_id', 'anon_accession_number', 'instance_number', 'frame_number', 'measurement', 'point_name', 'x', 'y']
 
-            coordinates = collections.defaultdict(list)
+            coordinates = collections.defaultdict(lambda: collections.defaultdict(list))
             frame = {}
             measurement = {}
             error = set()
@@ -41,10 +43,11 @@ def main(src, dest):
                 x = int(x)
                 y = int(y)
 
+                key = (patient, accession, instance)
+
+                coordinates[key][f].append((point_name, x, y))
+
                 key = (patient, accession, instance, f)
-
-                coordinates[key].append((point_name, x, y))
-
                 if key in measurement:
                     if measurement[key] != m:
                         measurement[key] = "INVALID"
@@ -52,13 +55,21 @@ def main(src, dest):
                 measurement[key] = m
 
             for key in coordinates:
-                coordinates[key] = sorted(coordinates[key])
+                for f in coordinates[key]:
+                    coordinates[key][f] = np.array(sorted(coordinates[key][f]))[:, 1:]
 
+        # os.makedirs(os.path.join(dest, "coordinates"), exist_ok=True)
+        # for key in tqdm.tqdm(coordinates):
+        #     for f in coordinates[key]:
+        #         os.makedirs(os.path.join(dest, "coordinates", measurement[key + (f,)]), exist_ok=True)
+        #         fig = plt.figure(figsize=(3, 3))
+        #         plt.scatter(*coordinates[key][f].transpose(), s=1, color="k")
+        #         for (i, (a, b)) in enumerate(coordinates[key][f]):
+        #             plt.text(a, b, str(i))
+        #         plt.tight_layout()
+        #         plt.savefig(os.path.join(dest, "coordinates", measurement[key + (f,)], "_".join(map(str, key + (f,))) + ".pdf"))
+        #         plt.close(fig)
 
-        test = collections.defaultdict(set)
-        for (p, a, i, f) in measurement:
-            test[(p, a, i)].add(measurement[(p, a, i, f)])
-        print(collections.Counter(map(lambda x: tuple(sorted(x)), test.values())))
 
         view = {}
         for (p, a, i, f) in measurement:
@@ -68,6 +79,7 @@ def main(src, dest):
 
             assert a4c != psax
 
+            # TODO: check that only one view appears
             if a4c:
                 view[(p, a, i)] = "A4C"
             elif psax:
@@ -110,47 +122,43 @@ def main(src, dest):
                 for i in instance_of_view[(p, a)]["A4C"]:
                     f.write("{}-{}-{:06d}.avi,{},{}\n".format(p, a, i, ef[(p, a)], split[p]))
 
-        iterables = [(zf, dest, filename) for filename in zf.namelist()]
+        coord = {}
+        iterables = [(zf, dest, coordinates, measurement, view, filename) for filename in zf.namelist()]
         with tqdm.tqdm(total=len(iterables)) as pbar:
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-                for _ in executor.map(save_tgz, iterables):
-                # for _ in map(save_tgz, iterables):
+                for c in executor.map(save_tgz, iterables):
+                # for c in map(save_tgz, iterables):
+                    # TODO: check keys of c not already in coord
+                    coord.update(c)
                     pbar.update()
-                    # save_tgz(zf, filename, dest)
 
+        for view in ["A4C", "PSAX"]:
+            os.makedirs(os.path.join(dest, view), exist_ok=True)
+            try:
+                os.symlink(os.path.join("..", "Videos"), os.path.join(dest, view, "Videos"))
+            except:
+                pass
+            with open(os.path.join(dest, view, "FileList.csv"), "w") as f:
+                f.write("FileName,EF,Split\n")
+                for (p, a) in ef:
+                    for i in instance_of_view[(p, a)][view]:
+                        if (p, a, "{:06d}".format(i)) in coord:
+                            f.write("{}-{}-{:06d}.avi,{},{}\n".format(p, a, i, ef[(p, a)], split[p]))
+            with open(os.path.join(dest, view, "VolumeTracings.csv"), "w") as f:
+                f.write("FileName,X,Y,Frame\n")
+                for (p, a) in ef:
+                    for i in instance_of_view[(p, a)][view]:
+                        if (p, a, "{:06d}".format(i)) in coord:
+                            for (frame, c) in coord[p, a, "{:06d}".format(i)]:
+                                for (x, y) in c:
+                                    f.write("{}-{}-{:06d},{},{},{}\n".format(p, a, i, x, y, frame))
 
-    return
-    for filename in tqdm.tqdm(sorted(os.listdir(src))):
-        output = os.path.join(dest, os.path.splitext(filename)[0] + ".webm")
-        if not os.path.isfile(output):
-            capture = cv2.VideoCapture(os.path.join(src, filename))
-            fps = capture.get(cv2.CAP_PROP_FPS)
-            video = echonet.utils.loadvideo(os.path.join(src, filename))
-            video = test(video)
-            # video.save(os.path.join(dest, os.path.splitext(filename)[0] + ".png"))
-            # continue
-            echonet.utils.savevideo(output, video, fps)
-        continue
-        # if filename in ["VID11216.mp4", "VID11713.mp4", "VID14180.mp4", "VID14278.mp4", "VID14441.mp4", "VID1480.mp4", "VID1481.mp4", "VID16642.mp4", "VID16885.mp4"]:
-        #     continue
-        # output = os.path.join(dest, os.path.splitext(filename)[0] + ".avi")
-        output = os.path.join(dest, filename)
-        if not os.path.isfile(output):
-            print(filename)
-            capture = cv2.VideoCapture(os.path.join(src, filename))
-            fps = capture.get(cv2.CAP_PROP_FPS)
-            print(fps)
-            video = echonet.utils.loadvideo(os.path.join(src, filename))
-            print(video.shape)
-            video = crop(video)
-            video = resize(video)
-            video = mask(video)
-            echonet.utils.savevideo(output, video, fps)
 
 def save_tgz(x):
-    (zf, dest, filename) = x
+    (zf, dest, coordinates, measurement, view, filename) = x
     m = re.search("Pediatric Echos/abnormals-deid/dicom/(CR[0-9a-z]{7})-(CR[0-9a-z]{7}).tgz", filename)
     
+    coord = collections.defaultdict(list)
     if m:
         patient, accession = m.groups()
         with zf.open(filename) as f:
@@ -164,15 +172,18 @@ def save_tgz(x):
     
                     # output = os.path.join(dest, "videos", "{}-{}".format(patient, accession), os.path.splitext(dicom.name)[0] + ".avi")
                     # os.makedirs(os.path.dirname(output), exist_ok=True)
-                    output = [
-                        os.path.join(dest, "videos-full", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
-                        os.path.join(dest, "videos-crop", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
-                        os.path.join(dest, "Videos", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
-                    ]
-                    for o in output:
+                    c = coordinates[patient, accession, int(InstanceNumber)]
+                    output = {
+                        "full": os.path.join(dest, "videos-full", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
+                        "crop": os.path.join(dest, "videos-crop", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
+                        "scale": os.path.join(dest, "Videos", "{}-{}-{}.avi".format(patient, accession, InstanceNumber)),
+                    }
+                    output.update({(f, "full"): os.path.join(dest, "trace-full", measurement[patient, accession, int(InstanceNumber), f], "{}-{}-{}-{}.jpg".format(patient, accession, InstanceNumber, f)) for f in c})
+                    output.update({(f, "scale"): os.path.join(dest, "trace", measurement[patient, accession, int(InstanceNumber), f], "{}-{}-{}-{}.jpg".format(patient, accession, InstanceNumber, f)) for f in c})
+                    for o in output.values():
                         os.makedirs(os.path.dirname(o), exist_ok=True)
     
-                    if not all(map(os.path.isfile, output)):
+                    if True:
                         with tf.extractfile(dicom.name) as f:
                             ds = pydicom.dcmread(f)
     
@@ -182,106 +193,65 @@ def save_tgz(x):
                         except:
                             pass
     
-                        # breakpoint()
                         try:
                             video = ds.pixel_array.transpose((3, 0, 1, 2))
-                            video = video[:, :, ::-1, :]
+                            if view[patient, accession, int(InstanceNumber)] == "A4C":
+                                video = video[:, :, ::-1, :]
+                                for f in c:
+                                    c[f][:, 1] = video.shape[2] - c[f][:, 1] - 1
+                            else:
+                                assert view[patient, accession, int(InstanceNumber)] == "PSAX"
                             video[1, :, :, :] = video[0, :, :, :]
                             video[2, :, :, :] = video[0, :, :, :]
 
-                            echonet.utils.savevideo(output[0], video, fps=fps)
+                            if not os.path.isfile(output["full"]):
+                                echonet.utils.savevideo(output["full"], video, fps=fps)
+                            
+                            for f in c:
+                                frame = video[:, f, :, :].copy()
+                                a, b = skimage.draw.polygon(c[f][:, 1], c[f][:, 0], (frame.shape[1], frame.shape[2]))
+                                frame[2, a, b] = 255
+                                PIL.Image.fromarray(frame.transpose((1, 2, 0))).save(output[f, "full"])
 
                             regions = ds.SequenceOfUltrasoundRegions
-                            assert len(regions) == 1
+                            if len(regions) != 1:
+                                raise ValueError("Found {} regions; expected 1.".format(len(regions)))
                             x0 = regions[0].RegionLocationMinX0
                             y0 = regions[0].RegionLocationMinY0
                             x1 = regions[0].RegionLocationMaxX1
                             y1 = regions[0].RegionLocationMaxY1
                             video = video[:, :, y0:(y1 + 1), x0:(x1 + 1)]
-                            echonet.utils.savevideo(output[1], video, fps=fps)
+                            echonet.utils.savevideo(output["crop"], video, fps=fps)
 
                             _, _, h, w = video.shape
                             video = video[:, :, :, ((w - h) // 2):(h + (w - h) // 2)]
+                            if video.shape[2] != video.shape[3]:
+                                raise ValueError("Failed to make video square ({}, {})".format(video.shape[2], video.shape[3]))
+
+                            for f in c:
+                                c[f] -= np.array([x0 + ((w - h) // 2), y0])
+                                c[f] = c[f] * 112 / np.array([video.shape[3], video.shape[2]])
+                                c[f] = c[f].astype(np.int64)
+
                             video = np.array(list(map(lambda x: cv2.resize(x, (112, 112), interpolation=cv2.INTER_AREA), video.transpose((1, 2, 3, 0))))).transpose((3, 0, 1, 2))
-                            echonet.utils.savevideo(output[2], video, fps=fps)
+                            echonet.utils.savevideo(output["scale"], video, fps=fps)
+
+                            for f in c:
+                                frame = video[:, f, :, :]
+                                a, b = skimage.draw.polygon(c[f][:, 1], c[f][:, 0], (frame.shape[1], frame.shape[2]))
+                                frame[2, a, b] = 255
+                                PIL.Image.fromarray(frame.transpose((1, 2, 0))).save(output[f, "scale"])
+
+                            coord[patient, accession, InstanceNumber].append((f, c[f]))
                         except Exception as e:
                             print(filename, dicom.name)
                             print(e, flush=True)
+                            print("", flush=True)
     else:
         assert filename in ["Pediatric Echos/abnormals-deid/README.txt",
                             "Pediatric Echos/abnormals-deid/deid_measurements.csv",
                             "Pediatric Echos/abnormals-deid/deid_coordinates.csv"]
-
-def crop(video):
-    h = video.shape[2]
-    w = video.shape[3]
-    start = round(0.6 * (w - h))
-    return video[:, :, :, start:(start + h)]
-
-def resize(video, size=(112, 112)):
-    return np.array(list(map(lambda x: cv2.resize(x, size, interpolation=cv2.INTER_AREA), video.transpose((1, 2, 3, 0))))).transpose((3, 0, 1, 2))
-
-def test(video):
-    (c, f, h, w) = video.shape
-    assert c == 3
-    std = video.std(1)
-    r = video.max(1) - video.min(1)
-    r = r.sum(0)
-    r = ((r > 0) * 255).astype(np.uint8)
-    # r = skimage.segmentation.flood_fill(r, (h // 2, w // 2), 128)
-    mask = skimage.segmentation.flood(r, (h // 2, w // 2))
-    video[:, :, ~mask] = 0
-    # return PIL.Image.fromarray(((r > 0) * 255).astype(np.uint8))
-    return video
-
-
-def mask(video):
-    h = video.shape[2]
-    w = video.shape[3]
-
-    target = np.any(video > 10, (0, 1))
-
-    n = h
-    x, y = np.meshgrid(np.arange(n), np.arange(n))
-
-    best = None
-    n = 25
-    for i in range(-n, n + 1, 2):
-        for j in range(0, n + 1, 2):
-            x_offset = w // 2 + i
-            y_offset = j
-
-            mask = np.logical_and(y - y_offset > x - w // 2 - i,
-                                  y - y_offset > w - x - w // 2 + i)
-            window = np.logical_and.reduce((
-                    x_offset - 100 < x,
-                    x < x_offset + 100,
-                    y_offset < y,
-                    y < y_offset + 100))
-
-            score = target[np.logical_and(window, mask)].sum() / np.logical_and(window, mask).sum() + (~target[np.logical_and(window, ~mask)]).sum() / np.logical_and(window, ~mask).sum()
-            score = (score, i, j)
-            if best is None or score > best:
-                best = score
-                print(best)
-
-    _, i, j = best
-    x_offset = w // 2 + i
-    y_offset = j
-    mask = np.logical_and(y - y_offset > x - w // 2 - i,
-                          y - y_offset > w - x - w // 2 + i)
-    window = np.logical_and.reduce((
-            x_offset - 100 < x,
-            x < x_offset + 100,
-            y_offset < y,
-            y < y_offset + 100))
-
-    #video[1, :] = (target * 255).astype(np.uint8)
-    # video[2, :] = (window * 255).astype(np.uint8)
-    # video[0, :, ~mask] = 255
-
-    video[:, :, ~mask] = 0
-    return video
+    return coord
 
 if __name__ == "__main__":
     main()
