@@ -75,17 +75,17 @@ def main(src, dest, device=None):
         echonet.datasets.Echo(root=src, split="test", **kwargs),
         batch_size=batch_size, num_workers=num_workers, shuffle=True, pin_memory=(device.type == "cuda"))
     loss, yhat, y = echonet.utils.video.run_epoch(model, dataloader, False, None, device)
-    print("{} (one clip) R2:   {:.3f} ({:.3f} - {:.3f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.r2_score)))
-    print("{} (one clip) MAE:  {:.2f} ({:.2f} - {:.2f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_absolute_error)))
-    print("{} (one clip) RMSE: {:.2f} ({:.2f} - {:.2f})".format(split, *tuple(map(math.sqrt, echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_squared_error)))))
+    print("{} blind (one clip) R2:   {:.3f} ({:.3f} - {:.3f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.r2_score)))
+    print("{} blind (one clip) MAE:  {:.2f} ({:.2f} - {:.2f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_absolute_error)))
+    print("{} blind (one clip) RMSE: {:.2f} ({:.2f} - {:.2f})".format(split, *tuple(map(math.sqrt, echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_squared_error)))))
 
-    # os.makedirs(os.path.join(dest, "fig"), exist_ok=True)
-    # fig = plt.figure(figsize=(3, 3))
-    # plt.scatter(y, yhat, s=1, color="k")
-    # plt.savefig(os.path.join(dest, "fig", "scatter_blind.pdf"))
-    # plt.close(fig)
+    os.makedirs(os.path.join(dest, "fig"), exist_ok=True)
+    fig = plt.figure(figsize=(3, 3))
+    plt.scatter(y, yhat, s=1, color="k")
+    plt.savefig(os.path.join(dest, "fig", "scatter_blind.pdf"))
+    plt.close(fig)
 
-    optim = torch.optim.SGD(model.module.fc.parameters(), lr=1e-4, momentum=0.9, weight_decay=weight_decay)
+    optim = torch.optim.SGD(model.module.fc.parameters(), lr=1e-5, momentum=0.9, weight_decay=weight_decay)
     if lr_step_period is None:
         lr_step_period = math.inf
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
@@ -185,7 +185,7 @@ def main(src, dest, device=None):
     plt.savefig(os.path.join(dest, "fig", "scatter_transfer.pdf"))
     plt.close(fig)
 
-    optim = torch.optim.SGD(model.parameters(), lr=1e-4, momentum=0.9, weight_decay=weight_decay)
+    optim = torch.optim.SGD(model.parameters(), lr=1e-5, momentum=0.9, weight_decay=weight_decay)
     if lr_step_period is None:
         lr_step_period = math.inf
     scheduler = torch.optim.lr_scheduler.StepLR(optim, lr_step_period)
@@ -278,8 +278,6 @@ def main(src, dest, device=None):
     print("{} (one clip) R2:   {:.3f} ({:.3f} - {:.3f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.r2_score)))
     print("{} (one clip) MAE:  {:.2f} ({:.2f} - {:.2f})".format(split, *echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_absolute_error)))
     print("{} (one clip) RMSE: {:.2f} ({:.2f} - {:.2f})".format(split, *tuple(map(math.sqrt, echonet.utils.bootstrap(y, yhat, sklearn.metrics.mean_squared_error)))))
-
-    breakpoint()
 
     os.makedirs(os.path.join(dest, "fig"), exist_ok=True)
     fig = plt.figure(figsize=(3, 3))
